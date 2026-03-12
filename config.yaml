@@ -1,0 +1,31 @@
+# 监控配置
+monitor:
+  interval: 600  # 10分钟 = 600秒
+
+# 股票列表（A股代码）
+stocks:
+  - "600519"   # 贵州茅台
+  - "000001"   # 平安银行
+  - "300750"   # 宁德时代
+  - "600036"   # 招商银行
+  - "601318"   # 中国平安
+
+# ETF列表
+etfs:
+  - "510300"   # 沪深300ETF
+  - "510500"   # 中证500ETF
+  - "159915"   # 创业板ETF
+  - "513100"   # 纳指ETF
+  - "513500"   # 标普500ETF
+
+# 均线配置
+ma:
+  period: 20    # 20日均线
+
+# 通知配置
+notification:
+  type: "telegram"
+  telegram:
+    # 生产环境使用环境变量
+    token: "${TELEGRAM_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
