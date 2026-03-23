@@ -24,8 +24,11 @@ ma:
 
 # 通知配置
 notification:
-  type: "telegram"
+  type: "feishu"  # 可选: "telegram", "feishu"
   telegram:
     # 生产环境使用环境变量
     token: "${TELEGRAM_TOKEN}"
     chat_id: "${TELEGRAM_CHAT_ID}"
+  feishu:
+    # 飞书机器人 Webhook 地址
+    webhook_url: "${FEISHU_WEBHOOK_URL}"

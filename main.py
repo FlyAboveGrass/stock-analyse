@@ -34,6 +34,7 @@ from core.fetcher import StockFetcher
 from core.indicator import TechnicalIndicator
 from core.detector import SignalDetector
 from notification.telegram import TelegramNotifier
+from notification.feishu import FeishuNotifier
 from storage.state import StateStorage
 
 
@@ -57,11 +58,20 @@ class StockMonitor:
         self.storage = StateStorage()
         
         # 通知器
-        notif_cfg = self.config.get('notification', {}).get('telegram', {})
-        self.notifier = TelegramNotifier(
-            token=os.getenv('TELEGRAM_TOKEN', notif_cfg.get('token', '')),
-            chat_id=os.getenv('TELEGRAM_CHAT_ID', notif_cfg.get('chat_id', ''))
-        )
+        notif_type = self.config.get('notification', {}).get('type', 'telegram')
+        notif_cfg = self.config.get('notification', {})
+        
+        if notif_type == 'feishu':
+            feishu_cfg = notif_cfg.get('feishu', {})
+            self.notifier = FeishuNotifier(
+                webhook_url=os.getenv('FEISHU_WEBHOOK_URL', feishu_cfg.get('webhook_url', ''))
+            )
+        else:
+            telegram_cfg = notif_cfg.get('telegram', {})
+            self.notifier = TelegramNotifier(
+                token=os.getenv('TELEGRAM_TOKEN', telegram_cfg.get('token', '')),
+                chat_id=os.getenv('TELEGRAM_CHAT_ID', telegram_cfg.get('chat_id', ''))
+            )
         
         # 监控配置
         self.interval = self.config['monitor']['interval']
@@ -186,22 +196,45 @@ class StockMonitor:
 
 def main():
     """主入口"""
-    # 获取配置文件路径
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    import argparse
     
-    # 检查配置文件是否存在
+    parser = argparse.ArgumentParser(description='A股均线监控系统')
+    parser.add_argument('--once', '-o', action='store_true', help='仅运行一次，不持续监控')
+    parser.add_argument('--report', '-r', action='store_true', help='发送每日MA20报告（最近3天）并退出')
+    parser.add_argument('--config', '-c', default='config.yaml', help='配置文件路径')
+    args = parser.parse_args()
+    
+    config_path = args.config
+    
     if not Path(config_path).exists():
-        # 尝试当前目录
         if not Path("config.yaml").exists():
             logger.error("配置文件不存在: config.yaml")
             logger.info("请在项目目录下运行，或指定配置文件路径")
             sys.exit(1)
         config_path = "config.yaml"
     
-    # 启动监控
     try:
         monitor = StockMonitor(config_path)
-        monitor.start()
+        
+        if args.report:
+            logger.info("发送每日MA20报告模式...")
+            if hasattr(monitor.notifier, 'send_daily_report'):
+                success = monitor.notifier.send_daily_report(days=3)
+                if success:
+                    logger.info("✅ 报告发送成功")
+                else:
+                    logger.error("❌ 报告发送失败")
+                    sys.exit(1)
+            else:
+                logger.warning("当前通知器不支持报告模式，使用普通运行模式")
+                monitor.run()
+        elif args.once:
+            logger.info("单次运行模式...")
+            monitor.run()
+        else:
+            # 持续监控模式
+            monitor.start()
+            
     except KeyboardInterrupt:
         logger.info("\n\n👋 监控服务已停止")
         sys.exit(0)
