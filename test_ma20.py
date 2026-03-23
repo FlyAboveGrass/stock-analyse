@@ -64,23 +64,46 @@ def get_stock_data(code: str, stock_type: str):
     cutoff_date = date.today() - timedelta(days=60)
     
     if stock_type == "etf":
-        # ETF - 使用 fund_etf_hist_em
-        hist = ak.fund_etf_hist_em(
-            symbol=code,
-            period='daily',
-            start_date=start_date,
-            end_date=end_date
-        )
-        if hist is None or len(hist) == 0:
-            # 尝试不带日期参数
-            hist = ak.fund_etf_hist_em(symbol=code, period='daily')
-        
-        if hist is not None and len(hist) > 0:
-            # ETF日期是字符串类型
-            if '日期' in hist.columns:
-                hist = hist[hist['日期'] >= cutoff_date_str]
-        
-        return hist, '收盘'
+        # ETF - 优先使用东方财富，失败则用新浪接口
+        hist = None
+
+        # 方法1: 东方财富接口
+        try:
+            hist = ak.fund_etf_hist_em(
+                symbol=code,
+                period='daily',
+                start_date=start_date,
+                end_date=end_date
+            )
+            if hist is None or len(hist) == 0:
+                hist = ak.fund_etf_hist_em(symbol=code, period='daily')
+
+            if hist is not None and len(hist) > 0:
+                if '日期' in hist.columns:
+                    hist = hist[hist['日期'] >= cutoff_date_str]
+                return hist, '收盘'
+        except Exception:
+            pass
+
+        # 方法2: 新浪接口 (备用)
+        try:
+            # 新浪接口需要市场前缀
+            if code.startswith('5') or code.startswith('58') or code.startswith('56'):
+                market_code = f"sh{code}"
+            else:
+                market_code = f"sz{code}"
+
+            hist = ak.fund_etf_hist_sina(symbol=market_code)
+            if hist is not None and len(hist) > 0:
+                # 新浪接口列名是英文，日期是 datetime.date 类型
+                hist = hist.rename(columns={'date': '日期', 'close': '收盘'})
+                if '日期' in hist.columns:
+                    hist = hist[hist['日期'] >= cutoff_date]
+                return hist, '收盘'
+        except Exception as e:
+            print(f"   ⚠️ ETF {code} 获取失败: {e}")
+
+        return None, None
     
     elif stock_type == "index":
         # 指数 - 使用 stock_zh_index_daily
@@ -105,32 +128,25 @@ def get_stock_data(code: str, stock_type: str):
             return None, None
     
     elif stock_type == "hk":
-        # 港股 - 尝试多种接口
+        # 港股 - 使用 stock_hk_daily (新浪财经接口)
         try:
-            hk_code = code.replace(".HK", "").replace("0", "")
-            # 方法1: stock_hk_hist
-            try:
-                hist = ak.stock_hk_hist(
-                    symbol=hk_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-                if hist is not None and len(hist) > 0:
-                    hist = hist.rename(columns={'date': '日期', 'close': '收盘'})
-                    return hist, '收盘'
-            except:
-                pass
-            
-            # 方法2: 使用港股实时数据接口
-            try:
-                spot = ak.stock_hk_spot_em()
-                stock_info = spot[spot['代码'] == hk_code]
-                if len(stock_info) > 0:
-                    # 实时数据只有一个点，需要其他方式获取历史
-                    pass
-            except:
-                pass
-                
+            # 港股代码需要保留前导零，如 "02020.HK" -> "02020"
+            hk_code = code.replace(".HK", "").replace(".hk", "")
+
+            # 使用 stock_hk_daily 接口获取历史数据
+            hist = ak.stock_hk_daily(symbol=hk_code, adjust='qfq')
+            if hist is not None and len(hist) > 0:
+                # 列名是英文，需要重命名为中文
+                hist = hist.rename(columns={'date': '日期', 'close': '收盘'})
+                # 日期过滤
+                cutoff = date.today() - timedelta(days=60)
+                if '日期' in hist.columns:
+                    # 日期可能是字符串，转换后比较
+                    hist['日期'] = hist['日期'].astype(str)
+                    cutoff_str = cutoff.strftime('%Y-%m-%d')
+                    hist = hist[hist['日期'] >= cutoff_str]
+                return hist, '收盘'
+
             return None, None
         except Exception as e:
             print(f"   ⚠️ 港股 {code} 获取失败: {e}")
