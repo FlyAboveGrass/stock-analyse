@@ -61,11 +61,29 @@ def get_stock_data(code: str, stock_type: str):
     
     elif stock_type == "index":
         try:
+            if code == "HSI":
+                try:
+                    hist = ak.stock_hk_index_daily_em(symbol="HSI")
+                    if hist is not None and len(hist) > 0:
+                        hist = hist.rename(columns={"date": "日期", "latest": "收盘"})
+                        if "日期" in hist.columns:
+                            hist["日期"] = hist["日期"].astype(str)
+                            hist = hist[hist["日期"] >= cutoff_date_str]
+                        return hist, "收盘"
+                except Exception:
+                    pass
+
+                hist = ak.stock_hk_index_daily_sina(symbol="HSI")
+                if hist is not None and len(hist) > 0:
+                    hist = hist.rename(columns={"date": "日期", "close": "收盘"})
+                    if "日期" in hist.columns:
+                        hist["日期"] = hist["日期"].astype(str)
+                        hist = hist[hist["日期"] >= cutoff_date_str]
+                    return hist, "收盘"
+                return None, None
+
             index_code = code.replace(".", "").replace("SH", "").replace("sz", "")
-            if index_code == "HSI":
-                hist = ak.stock_zh_index_daily(symbol="sh000001")
-            else:
-                hist = ak.stock_zh_index_daily(symbol=f"sh{index_code}")
+            hist = ak.stock_zh_index_daily(symbol=f"sh{index_code}")
             
             if hist is not None and len(hist) > 0:
                 if 'date' in hist.columns:
@@ -129,6 +147,73 @@ def calculate_ma(prices, period: int = 20) -> float:
         return None
     ma = prices.rolling(window=period).mean().iloc[-1]
     return float(ma)
+
+
+def get_realtime_quotes() -> Dict[str, Dict[str, Dict[str, float]]]:
+    """获取报告所需的实时行情快照"""
+    import akshare as ak
+
+    quotes = {
+        "etf": {},
+        "stock": {},
+        "index": {},
+    }
+
+    try:
+        etf_df = ak.fund_etf_spot_em()
+        etf_df = etf_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
+        for row in etf_df.itertuples(index=False):
+            quotes["etf"][str(row.代码)] = {
+                "price": float(row.最新价),
+                "change_pct": float(row.涨跌幅),
+            }
+    except Exception:
+        pass
+
+    try:
+        stock_df = ak.stock_zh_a_spot_em()
+        stock_df = stock_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
+        for row in stock_df.itertuples(index=False):
+            quotes["stock"][str(row.代码)] = {
+                "price": float(row.最新价),
+                "change_pct": float(row.涨跌幅),
+            }
+    except Exception:
+        pass
+
+    for symbol in ("上证系列指数", "指数成份"):
+        try:
+            index_df = ak.stock_zh_index_spot_em(symbol=symbol)
+            index_df = index_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
+            for row in index_df.itertuples(index=False):
+                quotes["index"][str(row.代码)] = {
+                    "price": float(row.最新价),
+                    "change_pct": float(row.涨跌幅),
+                }
+        except Exception:
+            continue
+
+    try:
+        hk_index_df = ak.stock_hk_index_spot_em()
+        hk_index_df = hk_index_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
+        for row in hk_index_df.itertuples(index=False):
+            quotes["index"][str(row.代码)] = {
+                "price": float(row.最新价),
+                "change_pct": float(row.涨跌幅),
+            }
+    except Exception:
+        pass
+
+    return quotes
+
+
+def get_realtime_quote(
+    realtime_quotes: Dict[str, Dict[str, Dict[str, float]]], code: str, stock_type: str
+) -> Optional[Dict[str, float]]:
+    """从快照映射中获取单个标的的实时行情"""
+    if stock_type == "index" and code != "HSI":
+        return realtime_quotes.get("index", {}).get(code.split(".")[0])
+    return realtime_quotes.get(stock_type, {}).get(code)
 
 
 class FeishuNotifier:
@@ -217,6 +302,8 @@ class FeishuNotifier:
             pass
         
         report["dates"] = dates
+        realtime_quotes = get_realtime_quotes()
+        latest_report_date = str(dates[-1]) if dates else None
         
         for stock in MONITOR_LIST:
             stock_data = {
@@ -242,36 +329,41 @@ class FeishuNotifier:
                     continue
                 
                 hist_sorted = hist.sort_values('日期').reset_index(drop=True)
-                recent_n = hist_sorted.tail(days + 20).copy().reset_index(drop=True)
+                recent_n = hist_sorted.tail(days).copy()
                 
                 if len(recent_n) < days:
                     stock_data["statuses"] = [f"❌ 数据不足"] * days
                     report["stocks"].append(stock_data)
                     continue
                 
-                for i in range(len(recent_n)):
-                    if i >= days:
-                        break
-                    
-                    row = recent_n.iloc[i]
-                    close_price = row[price_col]
-                    
-                    if i > 0:
-                        prev_price = recent_n.iloc[i-1][price_col]
+                for full_idx, row in recent_n.iterrows():
+                    realtime_quote = None
+                    if latest_report_date and str(row["日期"]) == latest_report_date:
+                        realtime_quote = get_realtime_quote(
+                            realtime_quotes, stock["code"], stock["type"]
+                        )
+
+                    close_price = (
+                        realtime_quote["price"] if realtime_quote else row[price_col]
+                    )
+
+                    if realtime_quote:
+                        change_str = f"{realtime_quote['change_pct']:+.2f}%"
+                    elif full_idx > 0:
+                        prev_price = hist_sorted.iloc[full_idx - 1][price_col]
                         change_pct = (close_price - prev_price) / prev_price * 100
                         change_str = f"{change_pct:+.2f}%"
                     else:
                         change_str = "—"
                     
-                    target_date = row['日期']
-                    full_idx_list = hist_sorted[hist_sorted['日期'] == target_date].index.tolist()
-                    
                     ma20 = None
-                    if full_idx_list:
-                        full_idx = full_idx_list[0]
-                        if full_idx >= 19:
-                            ma20_data = hist_sorted.iloc[full_idx-19:full_idx+1][price_col]
-                            ma20 = calculate_ma(ma20_data, period=20)
+                    if full_idx >= 19:
+                        if realtime_quote:
+                            prior_prices = hist_sorted.iloc[full_idx - 19 : full_idx][price_col].tolist()
+                            ma20_data = pd.Series(prior_prices + [close_price])
+                        else:
+                            ma20_data = hist_sorted.iloc[full_idx - 19 : full_idx + 1][price_col]
+                        ma20 = calculate_ma(ma20_data, period=20)
                     
                     if ma20:
                         is_above = close_price > ma20
