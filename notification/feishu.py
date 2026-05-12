@@ -1,10 +1,17 @@
 import os
 import logging
 import requests
-from typing import Optional, List, Dict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Dict, Iterable, Any
 from datetime import datetime, timedelta, date
 
 logger = logging.getLogger(__name__)
+
+EASTMONEY_BATCH_QUOTE_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+EASTMONEY_GLOBAL_INDEX_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+EASTMONEY_BATCH_FIELDS = "f12,f14,f2,f3"
+EASTMONEY_BATCH_UT = "f057cbcbce2a86e2866ab8877db1d059"
+REQUEST_TIMEOUT = 5
 
 
 MONITOR_LIST = [
@@ -44,20 +51,38 @@ def get_stock_data(code: str, stock_type: str):
     cutoff_date = date.today() - timedelta(days=60)
     
     if stock_type == "etf":
-        hist = ak.fund_etf_hist_em(
-            symbol=code,
-            period='daily',
-            start_date=start_date,
-            end_date=end_date
-        )
-        if hist is None or len(hist) == 0:
-            hist = ak.fund_etf_hist_em(symbol=code, period='daily')
-        
-        if hist is not None and len(hist) > 0:
-            if '日期' in hist.columns:
-                hist = hist[hist['日期'] >= cutoff_date_str]
-        
-        return hist, '收盘'
+        hist = None
+
+        try:
+            hist = ak.fund_etf_hist_em(
+                symbol=code,
+                period='daily',
+                start_date=start_date,
+                end_date=end_date
+            )
+            if hist is None or len(hist) == 0:
+                hist = ak.fund_etf_hist_em(symbol=code, period='daily')
+
+            if hist is not None and len(hist) > 0:
+                if '日期' in hist.columns:
+                    hist = hist[hist['日期'] >= cutoff_date_str]
+                return hist, '收盘'
+        except Exception:
+            pass
+
+        try:
+            market_code = f"{'sh' if code.startswith('5') else 'sz'}{code}"
+            hist = ak.fund_etf_hist_sina(symbol=market_code)
+
+            if hist is not None and len(hist) > 0:
+                hist = hist.rename(columns={'date': '日期', 'close': '收盘'})
+                if '日期' in hist.columns:
+                    hist = hist[hist['日期'] >= cutoff_date]
+                return hist, '收盘'
+        except Exception:
+            pass
+
+        return None, None
     
     elif stock_type == "index":
         try:
@@ -149,9 +174,69 @@ def calculate_ma(prices, period: int = 20) -> float:
     return float(ma)
 
 
-def get_realtime_quotes() -> Dict[str, Dict[str, Dict[str, float]]]:
-    """获取报告所需的实时行情快照"""
-    import akshare as ak
+def _quote_lookup_key(code: str, stock_type: str) -> str:
+    """将监控项代码映射成实时行情返回中的查找键。"""
+    if stock_type == "index" and code != "HSI":
+        return code.split(".")[0]
+    return code
+
+
+def _quote_secid(code: str, stock_type: str) -> str:
+    """将监控项代码映射成东财行情接口的 secid。"""
+    if stock_type == "index":
+        if code == "HSI":
+            return "100.HSI"
+        base_code, market = code.split(".")
+        return f"{1 if market.upper() == 'SH' else 0}.{base_code}"
+
+    if code.startswith(("5", "6")):
+        return f"1.{code}"
+    return f"0.{code}"
+
+
+def _iter_quote_items(diff: Any) -> Iterable[Dict[str, Any]]:
+    """兼容东财 diff 既可能是 list 也可能是 dict 的返回。"""
+    if isinstance(diff, dict):
+        return diff.values()
+    if isinstance(diff, list):
+        return diff
+    return []
+
+
+def _coerce_quote_value(value: Any, scale: float = 1.0) -> Optional[float]:
+    """将行情接口字段转换为 float，无法转换时返回 None。"""
+    if value in (None, "", "-"):
+        return None
+
+    try:
+        result = float(value) / scale
+    except (TypeError, ValueError):
+        return None
+
+    if result != result:
+        return None
+    return result
+
+
+def _build_quote(price_value: Any, change_pct_value: Any, scale: float = 1.0) -> Optional[Dict[str, float]]:
+    """将东财返回构造成统一的实时行情结构。"""
+    price = _coerce_quote_value(price_value, scale=scale)
+    change_pct = _coerce_quote_value(change_pct_value, scale=scale)
+
+    if price is None:
+        return None
+
+    return {
+        "price": price,
+        "change_pct": change_pct if change_pct is not None else 0.0,
+    }
+
+
+def get_target_realtime_quotes(
+    monitor_list: Optional[Iterable[Dict[str, str]]] = None,
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """按监控列表批量获取实时行情，避免全市场拉表。"""
+    monitor_list = list(monitor_list or MONITOR_LIST)
 
     quotes = {
         "etf": {},
@@ -159,61 +244,152 @@ def get_realtime_quotes() -> Dict[str, Dict[str, Dict[str, float]]]:
         "index": {},
     }
 
-    try:
-        etf_df = ak.fund_etf_spot_em()
-        etf_df = etf_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
-        for row in etf_df.itertuples(index=False):
-            quotes["etf"][str(row.代码)] = {
-                "price": float(row.最新价),
-                "change_pct": float(row.涨跌幅),
-            }
-    except Exception:
-        pass
+    mainland_monitors = []
+    mainland_code_to_type: Dict[str, str] = {}
+    has_hsi = False
 
-    try:
-        stock_df = ak.stock_zh_a_spot_em()
-        stock_df = stock_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
-        for row in stock_df.itertuples(index=False):
-            quotes["stock"][str(row.代码)] = {
-                "price": float(row.最新价),
-                "change_pct": float(row.涨跌幅),
-            }
-    except Exception:
-        pass
-
-    for symbol in ("上证系列指数", "指数成份"):
-        try:
-            index_df = ak.stock_zh_index_spot_em(symbol=symbol)
-            index_df = index_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
-            for row in index_df.itertuples(index=False):
-                quotes["index"][str(row.代码)] = {
-                    "price": float(row.最新价),
-                    "change_pct": float(row.涨跌幅),
-                }
-        except Exception:
+    for stock in monitor_list:
+        secid = _quote_secid(stock["code"], stock["type"])
+        if secid == "100.HSI":
+            has_hsi = True
             continue
 
-    try:
-        hk_index_df = ak.stock_hk_index_spot_em()
-        hk_index_df = hk_index_df[["代码", "最新价", "涨跌幅"]].dropna(subset=["代码", "最新价", "涨跌幅"])
-        for row in hk_index_df.itertuples(index=False):
-            quotes["index"][str(row.代码)] = {
-                "price": float(row.最新价),
-                "change_pct": float(row.涨跌幅),
-            }
-    except Exception:
-        pass
+        mainland_monitors.append(secid)
+        mainland_code_to_type[_quote_lookup_key(stock["code"], stock["type"])] = stock["type"]
+
+    if mainland_monitors:
+        params = {
+            "ut": EASTMONEY_BATCH_UT,
+            "fltt": "2",
+            "invt": "2",
+            "fields": EASTMONEY_BATCH_FIELDS,
+            "secids": ",".join(mainland_monitors) + ",?v=08926209912590994",
+        }
+        try:
+            response = requests.get(
+                EASTMONEY_BATCH_QUOTE_URL,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+            data_json = response.json()
+            for item in _iter_quote_items(data_json.get("data", {}).get("diff")):
+                code = str(item.get("f12", ""))
+                stock_type = mainland_code_to_type.get(code)
+                if not stock_type:
+                    continue
+
+                quote = _build_quote(item.get("f2"), item.get("f3"))
+                if quote is not None:
+                    quotes[stock_type][code] = quote
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.warning("批量获取沪深实时行情失败: %s", exc)
+
+    if has_hsi:
+        params = {
+            "np": "2",
+            "fltt": "1",
+            "invt": "2",
+            "fs": "i:100.HSI",
+            "fields": "f12,f14,f2,f3",
+            "fid": "f3",
+            "pn": "1",
+            "pz": "10",
+            "po": "1",
+            "dect": "1",
+            "wbp2u": "|0|0|0|web",
+        }
+        try:
+            response = requests.get(
+                EASTMONEY_GLOBAL_INDEX_URL,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+            data_json = response.json()
+            for item in _iter_quote_items(data_json.get("data", {}).get("diff")):
+                if str(item.get("f12", "")) != "HSI":
+                    continue
+
+                quote = _build_quote(item.get("f2"), item.get("f3"), scale=100)
+                if quote is not None:
+                    quotes["index"]["HSI"] = quote
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.warning("获取恒生指数实时行情失败: %s", exc)
 
     return quotes
+
+
+def get_realtime_quotes() -> Dict[str, Dict[str, Dict[str, float]]]:
+    """兼容旧调用，实际只拉取监控列表中的实时行情。"""
+    return get_target_realtime_quotes(MONITOR_LIST)
 
 
 def get_realtime_quote(
     realtime_quotes: Dict[str, Dict[str, Dict[str, float]]], code: str, stock_type: str
 ) -> Optional[Dict[str, float]]:
     """从快照映射中获取单个标的的实时行情"""
-    if stock_type == "index" and code != "HSI":
-        return realtime_quotes.get("index", {}).get(code.split(".")[0])
-    return realtime_quotes.get(stock_type, {}).get(code)
+    return realtime_quotes.get(stock_type, {}).get(_quote_lookup_key(code, stock_type))
+
+
+def _display_date_str(value: Any) -> str:
+    """将 DataFrame 中的日期统一格式化成 YYYY-MM-DD。"""
+    return str(value)[:10]
+
+
+def _build_report_points(hist_sorted, price_col: str, days: int, report_date: date, realtime_quote):
+    """构建日报展示窗口，必要时补入当天实时价。"""
+    if hist_sorted.empty:
+        return []
+
+    last_hist_date = _display_date_str(hist_sorted.iloc[-1]["日期"])
+    report_date_str = report_date.isoformat()
+    use_live_quote = realtime_quote is not None and report_date.weekday() < 5
+
+    if use_live_quote and last_hist_date < report_date_str:
+        start_idx = max(len(hist_sorted) - (days - 1), 0)
+        points = [
+            {
+                "display_date": _display_date_str(hist_sorted.iloc[idx]["日期"]),
+                "hist_idx": idx,
+                "close_price": hist_sorted.iloc[idx][price_col],
+                "realtime_quote": None,
+            }
+            for idx in range(start_idx, len(hist_sorted))
+        ]
+        points.append(
+            {
+                "display_date": report_date_str,
+                "hist_idx": len(hist_sorted),
+                "close_price": realtime_quote["price"],
+                "realtime_quote": realtime_quote,
+            }
+        )
+        return points
+
+    start_idx = max(len(hist_sorted) - days, 0)
+    points = []
+    for idx in range(start_idx, len(hist_sorted)):
+        point_quote = None
+        close_price = hist_sorted.iloc[idx][price_col]
+        if use_live_quote and idx == len(hist_sorted) - 1 and last_hist_date == report_date_str:
+            close_price = realtime_quote["price"]
+            point_quote = realtime_quote
+
+        points.append(
+            {
+                "display_date": _display_date_str(hist_sorted.iloc[idx]["日期"]),
+                "hist_idx": idx,
+                "close_price": close_price,
+                "realtime_quote": point_quote,
+            }
+        )
+
+    return points
+
+
+def _fetch_report_stock_data(stock: Dict[str, str]):
+    """获取单个监控项的历史数据，供线程池并发使用。"""
+    hist, price_col = get_stock_data(stock["code"], stock["type"])
+    return stock, hist, price_col
 
 
 class FeishuNotifier:
@@ -284,28 +460,14 @@ class FeishuNotifier:
             "dates": [],
             "stocks": []
         }
-        
-        dates = []
-        hist_test = None
-        
-        try:
-            import akshare as ak
-            hist_test = ak.fund_etf_hist_em(
-                symbol="512400", 
-                period="daily",
-                start_date=(datetime.now() - timedelta(days=30)).strftime('%Y%m%d'),
-                end_date=datetime.now().strftime('%Y%m%d')
-            )
-            hist_test = hist_test.sort_values('日期').reset_index(drop=True)
-            dates = hist_test.tail(days)['日期'].tolist()
-        except:
-            pass
-        
-        report["dates"] = dates
-        realtime_quotes = get_realtime_quotes()
-        latest_report_date = str(dates[-1]) if dates else None
-        
-        for stock in MONITOR_LIST:
+        report_date = date.today()
+        realtime_quotes = get_target_realtime_quotes(MONITOR_LIST)
+
+        max_workers = min(8, max(1, len(MONITOR_LIST)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            stock_results = list(executor.map(_fetch_report_stock_data, MONITOR_LIST))
+
+        for stock, hist, price_col in stock_results:
             stock_data = {
                 "name": stock["name"],
                 "code": stock["code"],
@@ -313,8 +475,6 @@ class FeishuNotifier:
             }
             
             try:
-                hist, price_col = get_stock_data(stock["code"], stock["type"])
-                
                 if hist is None or len(hist) == 0:
                     stock_data["statuses"] = [f"❌ 数据获取失败"] * days
                     report["stocks"].append(stock_data)
@@ -329,26 +489,32 @@ class FeishuNotifier:
                     continue
                 
                 hist_sorted = hist.sort_values('日期').reset_index(drop=True)
-                recent_n = hist_sorted.tail(days).copy()
-                
-                if len(recent_n) < days:
+                realtime_quote = get_realtime_quote(
+                    realtime_quotes, stock["code"], stock["type"]
+                )
+                report_points = _build_report_points(
+                    hist_sorted,
+                    price_col,
+                    days,
+                    report_date,
+                    realtime_quote,
+                )
+
+                if not report["dates"] and len(report_points) >= days:
+                    report["dates"] = [point["display_date"] for point in report_points[-days:]]
+
+                if len(report_points) < days:
                     stock_data["statuses"] = [f"❌ 数据不足"] * days
                     report["stocks"].append(stock_data)
                     continue
                 
-                for full_idx, row in recent_n.iterrows():
-                    realtime_quote = None
-                    if latest_report_date and str(row["日期"]) == latest_report_date:
-                        realtime_quote = get_realtime_quote(
-                            realtime_quotes, stock["code"], stock["type"]
-                        )
+                for point in report_points:
+                    full_idx = point["hist_idx"]
+                    close_price = point["close_price"]
+                    point_quote = point["realtime_quote"]
 
-                    close_price = (
-                        realtime_quote["price"] if realtime_quote else row[price_col]
-                    )
-
-                    if realtime_quote:
-                        change_str = f"{realtime_quote['change_pct']:+.2f}%"
+                    if point_quote and point_quote.get("change_pct") is not None:
+                        change_str = f"{point_quote['change_pct']:+.2f}%"
                     elif full_idx > 0:
                         prev_price = hist_sorted.iloc[full_idx - 1][price_col]
                         change_pct = (close_price - prev_price) / prev_price * 100
@@ -358,7 +524,7 @@ class FeishuNotifier:
                     
                     ma20 = None
                     if full_idx >= 19:
-                        if realtime_quote:
+                        if point_quote:
                             prior_prices = hist_sorted.iloc[full_idx - 19 : full_idx][price_col].tolist()
                             ma20_data = pd.Series(prior_prices + [close_price])
                         else:
