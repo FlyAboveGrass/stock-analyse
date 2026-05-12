@@ -385,23 +385,25 @@ class FeishuNotifier:
     def _build_report_message(self, report: Dict, days: int) -> str:
         """构建报告消息"""
         dates = report.get("dates", [])
-        
-        header = f"## A股/ETF MA20均线监控\n\n| 股票名称 | " + " | ".join(str(d) for d in dates) + " |"
-        separator = "| --- | " + " | ".join(["---"] * days) + " |"
-        
+
+        date_line = " | ".join(str(d) for d in dates) if dates else f"最近 {days} 个交易日"
+
         rows = []
         for stock in report["stocks"]:
-            row = f"| {stock['name']}（{stock['code']}） | " + " | ".join(stock["statuses"]) + " |"
+            statuses = " | ".join(stock["statuses"])
+            row = f"{stock['name']}（{stock['code']}）: {statuses}"
             rows.append(row)
-        
-        message = f"""{header}
-{separator}
-{chr(10).join(rows)}
 
----
-*数据来源: AkShare (东方财富)*
-*生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"""
-        
+        body = "\n".join(rows) if rows else "暂无监控数据"
+
+        message = (
+            "A股/ETF MA20均线监控\n"
+            f"日期: {date_line}\n\n"
+            f"{body}\n\n"
+            "数据来源: AkShare (东方财富)\n"
+            f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
         return message
     
     def test(self) -> bool:
