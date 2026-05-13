@@ -30,6 +30,7 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.loader import ConfigLoader
+from config.monitor_list import load_monitor_list_from_config
 from core.fetcher import StockFetcher
 from core.indicator import TechnicalIndicator
 from core.detector import SignalDetector
@@ -64,7 +65,8 @@ class StockMonitor:
         if notif_type == 'feishu':
             feishu_cfg = notif_cfg.get('feishu', {})
             self.notifier = FeishuNotifier(
-                webhook_url=os.getenv('FEISHU_WEBHOOK_URL', feishu_cfg.get('webhook_url', ''))
+                webhook_url=os.getenv('FEISHU_WEBHOOK_URL', feishu_cfg.get('webhook_url', '')),
+                monitor_list=load_monitor_list_from_config(self.config),
             )
         else:
             telegram_cfg = notif_cfg.get('telegram', {})

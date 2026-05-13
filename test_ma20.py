@@ -12,48 +12,12 @@ from datetime import datetime, timedelta, date
 sys.path.insert(0, str(Path(__file__).parent))
 
 import akshare as ak
+from config.monitor_list import load_monitor_list
 from core.indicator import TechnicalIndicator
 
 
-# 监控列表
-MONITOR_LIST = [
-    # A股ETF
-    {"code": "516020", "name": "化工ETF", "type": "etf"},
-    {"code": "560590", "name": "A500红利", "type": "etf"},
-    {"code": "512800", "name": "银行ETF", "type": "etf"},
-    {"code": "518880", "name": "黄金ETF", "type": "etf"},
-    {"code": "513180", "name": "恒生科技ETF", "type": "etf"},
-    {"code": "512400", "name": "有色金属ETF", "type": "etf"},
-    {"code": "516010", "name": "游戏ETF", "type": "etf"},
-    {"code": "512930", "name": "AI智能", "type": "etf"},
-    {"code": "515790", "name": "光伏ETF", "type": "etf"},
-    {"code": "159995", "name": "芯片ETF", "type": "etf"},
-    {"code": "516780", "name": "稀土ETF", "type": "etf"},
-    {"code": "562500", "name": "机器人ETF", "type": "etf"},
-    {"code": "513520", "name": "日经ETF", "type": "etf"},
-    
-    # A股指数
-    {"code": "000001.SH", "name": "上证指数", "type": "index"},
-    {"code": "000905.SH", "name": "中证500", "type": "index"},
-    {"code": "000688.SH", "name": "科创50", "type": "index"},
-    {"code": "HSI", "name": "恒生指数", "type": "index"},
-    
-    # A股股票
-    {"code": "002050", "name": "三花智控", "type": "stock"},
-    {"code": "600519", "name": "贵州茅台", "type": "stock"},
-    {"code": "300750", "name": "宁德时代", "type": "stock"},
-    {"code": "688981", "name": "中芯国际", "type": "stock"},
-    {"code": "600111", "name": "北方稀土", "type": "stock"},
-    {"code": "000592", "name": "平潭发展", "type": "stock"},
-    
-    # 港股
-    {"code": "02020.HK", "name": "安踏体育", "type": "hk"},
-    {"code": "01810.HK", "name": "小米集团-W", "type": "hk"},
-    {"code": "00285.HK", "name": "比亚迪电子", "type": "hk"},
-    {"code": "83690.HK", "name": "美团-WR", "type": "hk"},
-    {"code": "09988.HK", "name": "阿里巴巴-W", "type": "hk"},
-    {"code": "09880.HK", "name": "优必选", "type": "hk"},
-]
+# 监控列表统一从 config.yaml 读取
+MONITOR_LIST = load_monitor_list()
 
 
 def get_stock_data(code: str, stock_type: str):

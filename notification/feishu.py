@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Iterable, Any
 from datetime import datetime, timedelta, date
 
+from config.monitor_list import load_monitor_list
+
 logger = logging.getLogger(__name__)
 
 EASTMONEY_BATCH_QUOTE_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
@@ -14,31 +16,7 @@ EASTMONEY_BATCH_UT = "f057cbcbce2a86e2866ab8877db1d059"
 REQUEST_TIMEOUT = 5
 
 
-MONITOR_LIST = [
-    {"code": "516020", "name": "化工ETF", "type": "etf"},
-    {"code": "560590", "name": "A500红利", "type": "etf"},
-    {"code": "512800", "name": "银行ETF", "type": "etf"},
-    {"code": "518880", "name": "黄金ETF", "type": "etf"},
-    {"code": "513180", "name": "恒生科技ETF", "type": "etf"},
-    {"code": "512400", "name": "有色金属ETF", "type": "etf"},
-    {"code": "516010", "name": "游戏ETF", "type": "etf"},
-    {"code": "512930", "name": "AI智能", "type": "etf"},
-    {"code": "515790", "name": "光伏ETF", "type": "etf"},
-    {"code": "159995", "name": "芯片ETF", "type": "etf"},
-    {"code": "516780", "name": "稀土ETF", "type": "etf"},
-    {"code": "562500", "name": "机器人ETF", "type": "etf"},
-    {"code": "513520", "name": "日经ETF", "type": "etf"},
-    {"code": "000001.SH", "name": "上证指数", "type": "index"},
-    {"code": "000905.SH", "name": "中证500", "type": "index"},
-    {"code": "000688.SH", "name": "科创50", "type": "index"},
-    {"code": "HSI", "name": "恒生指数", "type": "index"},
-    {"code": "002050", "name": "三花智控", "type": "stock"},
-    {"code": "600519", "name": "贵州茅台", "type": "stock"},
-    {"code": "300750", "name": "宁德时代", "type": "stock"},
-    {"code": "688981", "name": "中芯国际", "type": "stock"},
-    {"code": "600111", "name": "北方稀土", "type": "stock"},
-    {"code": "000592", "name": "平潭发展", "type": "stock"},
-]
+MONITOR_LIST = load_monitor_list()
 
 
 def get_stock_data(code: str, stock_type: str):
@@ -318,9 +296,11 @@ def get_target_realtime_quotes(
     return quotes
 
 
-def get_realtime_quotes() -> Dict[str, Dict[str, Dict[str, float]]]:
+def get_realtime_quotes(
+    monitor_list: Optional[Iterable[Dict[str, str]]] = None,
+) -> Dict[str, Dict[str, Dict[str, float]]]:
     """兼容旧调用，实际只拉取监控列表中的实时行情。"""
-    return get_target_realtime_quotes(MONITOR_LIST)
+    return get_target_realtime_quotes(monitor_list or MONITOR_LIST)
 
 
 def get_realtime_quote(
@@ -395,8 +375,13 @@ def _fetch_report_stock_data(stock: Dict[str, str]):
 class FeishuNotifier:
     """飞书机器人通知器"""
     
-    def __init__(self, webhook_url: Optional[str] = None):
+    def __init__(
+        self,
+        webhook_url: Optional[str] = None,
+        monitor_list: Optional[Iterable[Dict[str, str]]] = None,
+    ):
         self.webhook_url = webhook_url or os.getenv('FEISHU_WEBHOOK_URL')
+        self.monitor_list = list(monitor_list) if monitor_list is not None else None
         
         if not self.webhook_url:
             raise ValueError("FEISHU_WEBHOOK_URL 必须设置")
@@ -455,17 +440,19 @@ class FeishuNotifier:
     def _generate_report(self, days: int) -> Dict:
         """生成报告数据"""
         import pandas as pd
+
+        monitor_list = self.monitor_list if self.monitor_list is not None else MONITOR_LIST
         
         report = {
             "dates": [],
             "stocks": []
         }
         report_date = date.today()
-        realtime_quotes = get_target_realtime_quotes(MONITOR_LIST)
+        realtime_quotes = get_target_realtime_quotes(monitor_list)
 
-        max_workers = min(8, max(1, len(MONITOR_LIST)))
+        max_workers = min(8, max(1, len(monitor_list)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            stock_results = list(executor.map(_fetch_report_stock_data, MONITOR_LIST))
+            stock_results = list(executor.map(_fetch_report_stock_data, monitor_list))
 
         for stock, hist, price_col in stock_results:
             stock_data = {

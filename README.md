@@ -68,6 +68,17 @@ etfs:
 
 ma:
   period: 20   # 均线周期
+
+notification:
+  type: "feishu"
+  feishu:
+    webhook_url: "${FEISHU_WEBHOOK_URL}"
+    monitor_list:
+      - "sh000001"
+      - "sh000688"
+      - "sz159934"
+      - "hkhsi"
+      # 继续按同样格式追加...
 ```
 
 ## 项目结构
