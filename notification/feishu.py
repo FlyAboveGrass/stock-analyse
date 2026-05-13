@@ -214,7 +214,21 @@ def _coerce_quote_value(value: Any, scale: float = 1.0) -> Optional[float]:
     return result
 
 
-def _build_quote(price_value: Any, change_pct_value: Any, scale: float = 1.0) -> Optional[Dict[str, float]]:
+def _normalize_display_name(value: Any) -> Optional[str]:
+    """标准化展示名称，空值返回 None。"""
+    if value is None:
+        return None
+
+    name = str(value).strip()
+    return name or None
+
+
+def _build_quote(
+    price_value: Any,
+    change_pct_value: Any,
+    scale: float = 1.0,
+    name_value: Any = None,
+) -> Optional[Dict[str, float]]:
     """将东财返回构造成统一的实时行情结构。"""
     price = _coerce_quote_value(price_value, scale=scale)
     change_pct = _coerce_quote_value(change_pct_value, scale=scale)
@@ -222,10 +236,26 @@ def _build_quote(price_value: Any, change_pct_value: Any, scale: float = 1.0) ->
     if price is None:
         return None
 
-    return {
+    quote = {
         "price": price,
         "change_pct": change_pct if change_pct is not None else 0.0,
     }
+    display_name = _normalize_display_name(name_value)
+    if display_name:
+        quote["name"] = display_name
+
+    return quote
+
+
+def _resolve_report_stock_name(stock: Dict[str, str], realtime_quote: Optional[Dict[str, float]]) -> str:
+    """日报优先展示实时行情中的正式名称，其次回退到监控列表名称。"""
+    if realtime_quote:
+        realtime_name = _normalize_display_name(realtime_quote.get("name"))
+        if realtime_name:
+            return realtime_name
+
+    stock_name = _normalize_display_name(stock.get("name"))
+    return stock_name or stock["code"]
 
 
 def get_target_realtime_quotes(
@@ -280,7 +310,7 @@ def get_target_realtime_quotes(
                 if not stock_type:
                     continue
 
-                quote = _build_quote(item.get("f2"), item.get("f3"))
+                quote = _build_quote(item.get("f2"), item.get("f3"), name_value=item.get("f14"))
                 if quote is not None:
                     quotes[stock_type][code] = quote
         except (requests.RequestException, ValueError, TypeError) as exc:
@@ -311,7 +341,7 @@ def get_target_realtime_quotes(
                 if str(item.get("f12", "")) != "HSI":
                     continue
 
-                quote = _build_quote(item.get("f2"), item.get("f3"), scale=100)
+                quote = _build_quote(item.get("f2"), item.get("f3"), scale=100, name_value=item.get("f14"))
                 if quote is not None:
                     quotes["index"]["HSI"] = quote
         except (requests.RequestException, ValueError, TypeError) as exc:
@@ -327,7 +357,7 @@ def get_target_realtime_quotes(
                 if code not in hk_codes:
                     continue
 
-                quote = _build_quote(item.get("最新价"), item.get("涨跌幅"))
+                quote = _build_quote(item.get("最新价"), item.get("涨跌幅"), name_value=item.get("名称"))
                 if quote is not None:
                     quotes["hk"][code] = quote
         except Exception as exc:
@@ -495,8 +525,11 @@ class FeishuNotifier:
             stock_results = list(executor.map(_fetch_report_stock_data, monitor_list))
 
         for stock, hist, price_col in stock_results:
+            realtime_quote = get_realtime_quote(
+                realtime_quotes, stock["code"], stock["type"]
+            )
             stock_data = {
-                "name": stock["name"],
+                "name": _resolve_report_stock_name(stock, realtime_quote),
                 "code": stock["code"],
                 "statuses": []
             }
@@ -516,9 +549,6 @@ class FeishuNotifier:
                     continue
                 
                 hist_sorted = hist.sort_values('日期').reset_index(drop=True)
-                realtime_quote = get_realtime_quote(
-                    realtime_quotes, stock["code"], stock["type"]
-                )
                 report_points = _build_report_points(
                     hist_sorted,
                     price_col,
@@ -584,7 +614,7 @@ class FeishuNotifier:
         rows = []
         for stock in report["stocks"]:
             statuses = " | ".join(stock["statuses"])
-            row = f"{stock['name']}（{stock['code']}）: {statuses}"
+            row = f"{stock['name']}: {statuses}"
             rows.append(row)
 
         body = "\n".join(rows) if rows else "暂无监控数据"

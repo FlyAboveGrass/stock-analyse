@@ -36,8 +36,10 @@ class FeishuNotifierReportTest(unittest.TestCase):
 
         self.assertIn("A股/港股/ETF MA20均线监控", message)
         self.assertIn("日期: 2026-05-08 | 2026-05-09 | 2026-05-12", message)
-        self.assertIn("化工ETF（516020）: ❌ 错误 | ❌ 错误 | ❌ 错误", message)
-        self.assertIn("上证指数（000001.SH）: ✅ +0.48% | ✅ -0.00% | ✅ +1.08%", message)
+        self.assertIn("化工ETF: ❌ 错误 | ❌ 错误 | ❌ 错误", message)
+        self.assertIn("上证指数: ✅ +0.48% | ✅ -0.00% | ✅ +1.08%", message)
+        self.assertNotIn("516020", message)
+        self.assertNotIn("000001.SH", message)
         self.assertNotIn("| --- |", message)
         self.assertNotIn("## ", message)
 
@@ -188,10 +190,10 @@ class FeishuNotifierReportTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(quotes["etf"]["516020"], {"price": 1.234, "change_pct": 0.56})
-        self.assertEqual(quotes["index"]["000001"], {"price": 3200.12, "change_pct": -0.32})
-        self.assertEqual(quotes["stock"]["002050"], {"price": 25.67, "change_pct": 1.23})
-        self.assertEqual(quotes["index"]["HSI"], {"price": 23567.89, "change_pct": 1.23})
+        self.assertEqual(quotes["etf"]["516020"], {"price": 1.234, "change_pct": 0.56, "name": "化工ETF"})
+        self.assertEqual(quotes["index"]["000001"], {"price": 3200.12, "change_pct": -0.32, "name": "上证指数"})
+        self.assertEqual(quotes["stock"]["002050"], {"price": 25.67, "change_pct": 1.23, "name": "三花智控"})
+        self.assertEqual(quotes["index"]["HSI"], {"price": 23567.89, "change_pct": 1.23, "name": "恒生指数"})
         self.assertEqual(mock_get.call_count, 2)
 
         mainland_params = mock_get.call_args_list[0].kwargs["params"]
@@ -225,8 +227,8 @@ class FeishuNotifierReportTest(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual(quotes["hk"]["01810"], {"price": 52.3, "change_pct": 1.56})
-        self.assertEqual(quotes["hk"]["09988"], {"price": 84.6, "change_pct": -0.78})
+        self.assertEqual(quotes["hk"]["01810"], {"price": 52.3, "change_pct": 1.56, "name": "小米集团-W"})
+        self.assertEqual(quotes["hk"]["09988"], {"price": 84.6, "change_pct": -0.78, "name": "阿里巴巴-W"})
         fake_ak.stock_hk_spot_em.assert_called_once_with()
 
     def test_generate_report_appends_today_realtime_when_history_not_updated(self):
@@ -289,6 +291,65 @@ class FeishuNotifierReportTest(unittest.TestCase):
 
         self.assertEqual(report["dates"], ["2026-05-15", "2026-05-18", "2026-05-19"])
         self.assertEqual(report["stocks"][0]["statuses"], ["✅ +5.00%", "✅ +4.76%", "✅ +2.34%"])
+
+    def test_generate_report_prefers_realtime_quote_name_when_monitor_name_is_symbol_like(self):
+        hist = pd.DataFrame(
+            {
+                "日期": pd.to_datetime(
+                    [
+                        "2026-04-14",
+                        "2026-04-15",
+                        "2026-04-16",
+                        "2026-04-17",
+                        "2026-04-20",
+                        "2026-04-21",
+                        "2026-04-22",
+                        "2026-04-23",
+                        "2026-04-24",
+                        "2026-04-27",
+                        "2026-04-28",
+                        "2026-04-29",
+                        "2026-04-30",
+                        "2026-05-06",
+                        "2026-05-07",
+                        "2026-05-08",
+                        "2026-05-11",
+                        "2026-05-12",
+                        "2026-05-13",
+                        "2026-05-14",
+                        "2026-05-15",
+                        "2026-05-18",
+                    ]
+                ),
+                "收盘": [float(i) for i in range(1, 23)],
+            }
+        )
+
+        with patch.object(
+            feishu_module,
+            "MONITOR_LIST",
+            [{"code": "159813", "name": "sz159813", "type": "etf"}],
+        ):
+            with patch.object(feishu_module, "get_stock_data", return_value=(hist, "收盘")):
+                with patch.object(
+                    feishu_module,
+                    "get_target_realtime_quotes",
+                    return_value={
+                        "etf": {
+                            "159813": {
+                                "price": 30.0,
+                                "change_pct": 2.34,
+                                "name": "半导体设备ETF",
+                            }
+                        },
+                        "stock": {},
+                        "index": {},
+                        "hk": {},
+                    },
+                ):
+                    report = self.notifier._generate_report(days=3)
+
+        self.assertEqual(report["stocks"][0]["name"], "半导体设备ETF")
 
 
 if __name__ == "__main__":
