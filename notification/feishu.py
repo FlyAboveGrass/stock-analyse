@@ -98,6 +98,22 @@ def get_stock_data(code: str, stock_type: str):
         except Exception as e:
             return None, None
     
+    elif stock_type == "hk":
+        try:
+            hk_code = code.replace(".HK", "").replace(".hk", "")
+            hist = ak.stock_hk_daily(symbol=hk_code, adjust="qfq")
+
+            if hist is not None and len(hist) > 0:
+                hist = hist.rename(columns={"date": "日期", "close": "收盘"})
+                if "日期" in hist.columns:
+                    hist["日期"] = hist["日期"].astype(str)
+                    hist = hist[hist["日期"] >= cutoff_date_str]
+                return hist, "收盘"
+
+            return None, None
+        except Exception:
+            return None, None
+
     else:
         try:
             if code.startswith('6'):
@@ -155,6 +171,8 @@ def calculate_ma(prices, period: int = 20) -> float:
 def _quote_lookup_key(code: str, stock_type: str) -> str:
     """将监控项代码映射成实时行情返回中的查找键。"""
     if stock_type == "index" and code != "HSI":
+        return code.split(".")[0]
+    if stock_type == "hk":
         return code.split(".")[0]
     return code
 
@@ -220,13 +238,19 @@ def get_target_realtime_quotes(
         "etf": {},
         "stock": {},
         "index": {},
+        "hk": {},
     }
 
     mainland_monitors = []
     mainland_code_to_type: Dict[str, str] = {}
     has_hsi = False
+    hk_codes = set()
 
     for stock in monitor_list:
+        if stock["type"] == "hk":
+            hk_codes.add(_quote_lookup_key(stock["code"], stock["type"]))
+            continue
+
         secid = _quote_secid(stock["code"], stock["type"])
         if secid == "100.HSI":
             has_hsi = True
@@ -292,6 +316,22 @@ def get_target_realtime_quotes(
                     quotes["index"]["HSI"] = quote
         except (requests.RequestException, ValueError, TypeError) as exc:
             logger.warning("获取恒生指数实时行情失败: %s", exc)
+
+    if hk_codes:
+        try:
+            import akshare as ak
+
+            hk_spot = ak.stock_hk_spot_em()
+            for _, item in hk_spot.iterrows():
+                code = str(item.get("代码", "")).zfill(5)
+                if code not in hk_codes:
+                    continue
+
+                quote = _build_quote(item.get("最新价"), item.get("涨跌幅"))
+                if quote is not None:
+                    quotes["hk"][code] = quote
+        except Exception as exc:
+            logger.warning("获取港股实时行情失败: %s", exc)
 
     return quotes
 
@@ -550,7 +590,7 @@ class FeishuNotifier:
         body = "\n".join(rows) if rows else "暂无监控数据"
 
         message = (
-            "A股/ETF MA20均线监控\n"
+            "A股/港股/ETF MA20均线监控\n"
             f"日期: {date_line}\n\n"
             f"{body}\n\n"
             "数据来源: AkShare (东方财富)\n"

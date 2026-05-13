@@ -278,7 +278,7 @@ def test_all_stocks():
         rows.append(row)
     
     # 构建Markdown
-    markdown = f"""## A股/ETF MA20均线监控
+    markdown = f"""## A股/港股/ETF MA20均线监控
 
 {header}
 {separator}

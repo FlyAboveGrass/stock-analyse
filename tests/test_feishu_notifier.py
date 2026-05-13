@@ -34,7 +34,7 @@ class FeishuNotifierReportTest(unittest.TestCase):
 
         message = self.notifier._build_report_message(report, days=3)
 
-        self.assertIn("A股/ETF MA20均线监控", message)
+        self.assertIn("A股/港股/ETF MA20均线监控", message)
         self.assertIn("日期: 2026-05-08 | 2026-05-09 | 2026-05-12", message)
         self.assertIn("化工ETF（516020）: ❌ 错误 | ❌ 错误 | ❌ 错误", message)
         self.assertIn("上证指数（000001.SH）: ✅ +0.48% | ✅ -0.00% | ✅ +1.08%", message)
@@ -87,6 +87,25 @@ class FeishuNotifierReportTest(unittest.TestCase):
         self.assertEqual(hist["日期"].astype(str).tolist(), ["2026-05-08", "2026-05-09", "2026-05-12"])
         self.assertEqual(hist["收盘"].tolist(), [1.01, 1.03, 1.05])
         fake_ak.fund_etf_hist_sina.assert_called_once_with(symbol="sh516020")
+
+    def test_get_stock_data_hk_uses_hk_daily(self):
+        hk_hist = pd.DataFrame(
+            {
+                "date": ["2026-05-08", "2026-05-09", "2026-05-12"],
+                "close": [52.1, 53.4, 54.2],
+            }
+        )
+        fake_ak = SimpleNamespace(
+            stock_hk_daily=Mock(return_value=hk_hist),
+        )
+
+        with patch.dict("sys.modules", {"akshare": fake_ak}):
+            hist, price_col = feishu_module.get_stock_data("01810.HK", "hk")
+
+        self.assertEqual(price_col, "收盘")
+        self.assertEqual(hist["日期"].astype(str).tolist(), ["2026-05-08", "2026-05-09", "2026-05-12"])
+        self.assertEqual(hist["收盘"].tolist(), [52.1, 53.4, 54.2])
+        fake_ak.stock_hk_daily.assert_called_once_with(symbol="01810", adjust="qfq")
 
     def test_generate_report_uses_first_successful_symbol_dates_when_probe_fails(self):
         hist = pd.DataFrame(
@@ -183,6 +202,32 @@ class FeishuNotifierReportTest(unittest.TestCase):
 
         hsi_params = mock_get.call_args_list[1].kwargs["params"]
         self.assertEqual(hsi_params["fs"], "i:100.HSI")
+
+    def test_get_target_realtime_quotes_includes_hk_symbols(self):
+        fake_ak = SimpleNamespace(
+            stock_hk_spot_em=Mock(
+                return_value=pd.DataFrame(
+                    {
+                        "代码": ["01810", "09988"],
+                        "名称": ["小米集团-W", "阿里巴巴-W"],
+                        "最新价": [52.3, 84.6],
+                        "涨跌幅": [1.56, -0.78],
+                    }
+                )
+            )
+        )
+
+        with patch.dict("sys.modules", {"akshare": fake_ak}):
+            quotes = feishu_module.get_target_realtime_quotes(
+                [
+                    {"code": "01810.HK", "name": "小米集团-W", "type": "hk"},
+                    {"code": "09988.HK", "name": "阿里巴巴-W", "type": "hk"},
+                ]
+            )
+
+        self.assertEqual(quotes["hk"]["01810"], {"price": 52.3, "change_pct": 1.56})
+        self.assertEqual(quotes["hk"]["09988"], {"price": 84.6, "change_pct": -0.78})
+        fake_ak.stock_hk_spot_em.assert_called_once_with()
 
     def test_generate_report_appends_today_realtime_when_history_not_updated(self):
         hist = pd.DataFrame(

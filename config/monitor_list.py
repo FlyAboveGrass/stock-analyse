@@ -17,13 +17,18 @@ _NAME_OVERRIDES = {
     "560390": "A500红利",
     "688981": "中芯国际",
     "002050": "三花智控",
+    "01810.HK": "小米集团-W",
+    "09988.HK": "阿里巴巴-W",
+    "02020.HK": "安踏体育",
+    "00285.HK": "比亚迪电子",
+    "09880.HK": "优必选",
+    "83690.HK": "美团-WR",
 }
 
 _UNSUPPORTED_PREFIX_REASONS = {
     "usr_": "当前实现未接入美股/美股指数历史数据与实时行情抓取",
     "nf_": "当前实现未接入中金所期货连续合约历史数据与实时行情抓取",
     "hf_": "当前实现未接入海外商品/CFD历史数据与实时行情抓取",
-    "hk": "当前实现未接入港股个股历史数据与实时行情抓取",
 }
 
 
@@ -60,6 +65,12 @@ def _parse_supported_symbol(symbol: str) -> Optional[Dict[str, str]]:
 
         if market == "sz" and code.startswith(("0", "3")):
             return {"code": code, "name": _NAME_OVERRIDES.get(code, symbol), "type": "stock"}
+
+    if normalized_symbol.startswith("hk") and len(normalized_symbol) == 7:
+        code = normalized_symbol[2:]
+        if code.isdigit():
+            hk_code = f"{code}.HK"
+            return {"code": hk_code, "name": _NAME_OVERRIDES.get(hk_code, symbol), "type": "hk"}
 
     return None
 

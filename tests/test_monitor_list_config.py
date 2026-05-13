@@ -36,6 +36,7 @@ class MonitorListConfigTest(unittest.TestCase):
                 {"code": "000688.SH", "name": "科创50", "type": "index"},
                 {"code": "159934", "name": "黄金ETF", "type": "etf"},
                 {"code": "HSI", "name": "恒生指数", "type": "index"},
+                {"code": "01810.HK", "name": "小米集团-W", "type": "hk"},
                 {"code": "688981", "name": "中芯国际", "type": "stock"},
                 {"code": "002050", "name": "三花智控", "type": "stock"},
                 {"code": "000905.SH", "name": "中证500", "type": "index"},
@@ -47,7 +48,6 @@ class MonitorListConfigTest(unittest.TestCase):
             [
                 ("usr_ixic", "当前实现未接入美股/美股指数历史数据与实时行情抓取"),
                 ("nf_IF0", "当前实现未接入中金所期货连续合约历史数据与实时行情抓取"),
-                ("hk01810", "当前实现未接入港股个股历史数据与实时行情抓取"),
             ],
         )
 
